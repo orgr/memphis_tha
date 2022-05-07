@@ -1,52 +1,107 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"encoding/json"
+	"time"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
 
 const (
-	route = "sendMessage"
-	httpPort = "8080"
-	natsPort = nats.DefaultURL
-	subject = "messages"
+	route                  = "sendMessage"
+	httpPort               = "8080"
+	natsPort               = nats.DefaultURL
+	serverReadinessTimeout = 4 * time.Second
+	subject                = "messages"
 )
 
 type message struct {
 	Author string `json:"author"`
-	Data string `json:"data"`
+	Data   string `json:"data"`
 }
 
-var natsClient nats.Conn
+var natsServer *server.Server
+var natsClient *nats.Conn
+var jetStream nats.JetStreamContext
 
 func main() {
-	http.HandleFunc("/" + route, handler)
+	setupNatsServer()
+
+	setupNatsClient()
+	defer natsClient.Close()
+
+	setupJetStream()
+
+	setupStream()
+
+	subscribeToNats(natsClient)
+
+	log.Println("Starting HTTP server")
+	http.HandleFunc("/"+route, httpHandler)
+	log.Fatal(http.ListenAndServe(":"+httpPort, nil))
+}
+
+func setupNatsServer() {
+	log.Println("Start an embedded NATS server")
+
+	var err error
+	serverOptions := &server.Options{
+		JetStream: true,
+	}
+	natsServer, err = server.NewServer(serverOptions)
+	exitOnError(err)
+
+	go natsServer.Start()
+	if !natsServer.ReadyForConnections(serverReadinessTimeout) {
+		log.Fatal("Not ready for connections")
+	}
+}
+
+func setupNatsClient() {
 	log.Println("Establising connection with NATS server")
-	natsConnectionPtr, err := nats.Connect(natsPort)
+
+	var err error
+	natsClient, err = nats.Connect(natsPort)
+	exitOnError(err)
+}
+
+func setupJetStream() {
+	var err error
+	jetStream, err = natsClient.JetStream()
+	exitOnError(err)
+}
+
+func setupStream() {
+	stream, err := jetStream.StreamInfo(subject)
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
+	}
+
+	if stream != nil {
+		log.Printf("Stream \"%s\" exists\n", subject)
 		return
 	}
-	natsClient = *natsConnectionPtr
 
-	subscribeToNats(&natsClient)
-	log.Println("Starting HTTP server")
-	log.Fatal(http.ListenAndServe(":" + httpPort, nil))
+	log.Printf("Creating stream \"%s\"\n", subject)
+	_, err = jetStream.AddStream(&nats.StreamConfig{
+		Name: subject,
+	})
+	exitOnError(err)
 }
 
 func subscribeToNats(nc *nats.Conn) {
 	nc.Subscribe(subject, func(msg *nats.Msg) {
-        // Print message data
-        data := string(msg.Data)
-        fmt.Println(data)
-    })
+		// Print message data
+		data := string(msg.Data)
+		fmt.Println(data)
+	})
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
+func httpHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "POST":
 		var receivedMessage message
@@ -66,5 +121,14 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func publishMessage(message message) {
-	natsClient.Publish(subject, []byte(message.Data))
+	_, err := jetStream.Publish(subject, []byte(message.Data))
+	if err != nil {
+		log.Print(err)
+	}
+}
+
+func exitOnError(err error) {
+	if err != nil {
+		log.Fatal(err)
+	}
 }
