@@ -38,8 +38,6 @@ func main() {
 
 	setupStream()
 
-	subscribeToNats(natsClient)
-
 	log.Println("Starting HTTP server")
 	http.HandleFunc("/"+route, httpHandler)
 	log.Fatal(http.ListenAndServe(":"+httpPort, nil))
@@ -91,14 +89,6 @@ func setupStream() {
 		Name: subject,
 	})
 	exitOnError(err)
-}
-
-func subscribeToNats(nc *nats.Conn) {
-	nc.Subscribe(subject, func(msg *nats.Msg) {
-		// Print message data
-		data := string(msg.Data)
-		fmt.Println(data)
-	})
 }
 
 func httpHandler(w http.ResponseWriter, r *http.Request) {
